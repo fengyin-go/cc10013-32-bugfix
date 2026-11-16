@@ -10,13 +10,17 @@ from app.seed import SEED_ROWS
 
 
 class Store:
+    # 未完成审计待处理区不是业务模块，不进 overview，只承载缺失审计文件的索引。
+    PENDING_AUDIT_TABLE = "pending_audit"
+
     def __init__(self) -> None:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        self._tables[self.PENDING_AUDIT_TABLE] = []
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        return sorted(name for name in self._tables if name != self.PENDING_AUDIT_TABLE)
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])
@@ -24,6 +28,12 @@ class Store:
     def find(self, module: str, entry_id: int) -> dict[str, Any] | None:
         for row in self.rows(module):
             if int(row.get("id", 0)) == entry_id:
+                return row
+        return None
+
+    def find_pending(self, entry_id: int) -> dict[str, Any] | None:
+        for row in self.rows(self.PENDING_AUDIT_TABLE):
+            if int(row.get("log_id", 0)) == entry_id:
                 return row
         return None
 

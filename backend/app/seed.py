@@ -3,6 +3,90 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.archive_file import build_archive, verify_archive
+
+
+def _log_row(
+    row_id: int,
+    record_no: str,
+    endpoint: str,
+    request_time: str,
+    status: str,
+    *,
+    response_status: str,
+    cost_ms: str,
+    row_count: str,
+    error: str,
+    retries: str,
+    retain_until: str,
+    visible: bool = True,
+    abnormal: bool = False,
+    events: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": row_id,
+        "status": status,
+        "pending": status in ("草稿", "记录中"),
+        "abnormal": abnormal,
+        "记录编号": record_no,
+        "关联端点": endpoint,
+        "请求时间": request_time,
+        "响应状态": response_status,
+        "耗时毫秒": cost_ms,
+        "返回行数": row_count,
+        "错误信息": error,
+        "重试次数": retries,
+        "visible": visible,
+        "retain_until": retain_until,
+        "archive": None,
+        "events": events or [],
+    }
+
+
+def _build_log_seed() -> list[dict[str, Any]]:
+    """采集日志种子：覆盖记录中、归档缺文件、完整归档、已清理（仅隐藏）四种情形。"""
+    rows = [
+        _log_row(
+            1, "LOG-2026-1101-001", "EP-LOG-WEB", "2026-11-01 08:12:30", "记录中",
+            response_status="200", cost_ms="128", row_count="52", error="", retries="0",
+            retain_until="2027-02-01",
+            events=[{"at": "2026-11-01T08:12:31", "action": "登记日志", "operator": "system"}],
+        ),
+        # 历史故障现场：状态被翻成已归档，但审计文件根本没写出来——待处理区要能兜住。
+        _log_row(
+            2, "LOG-2026-1102-007", "EP-LOG-ORDER", "2026-11-02 09:41:02", "已归档",
+            response_status="500", cost_ms="3021", row_count="0", error="上游服务超时",
+            retries="2", retain_until="2027-02-02", abnormal=True,
+            events=[{"at": "2026-11-03T02:10:00", "action": "归档记录", "operator": "system",
+                     "result": "失败：审计文件写入未完成即切换状态"}],
+        ),
+        _log_row(
+            3, "LOG-2026-0820-003", "EP-LOG-PAY", "2026-08-20 22:05:11", "已归档",
+            response_status="201", cost_ms="86", row_count="12", error="", retries="1",
+            retain_until="2026-11-10",
+            events=[{"at": "2026-08-20T22:05:12", "action": "登记日志", "operator": "system"},
+                    {"at": "2026-08-21T09:00:00", "action": "归档记录",
+                     "operator": "archivist-01"}],
+        ),
+        _log_row(
+            4, "LOG-2026-0915-012", "EP-LOG-PAY", "2026-09-15 14:20:45", "已清理",
+            response_status="429", cost_ms="45", row_count="0", error="触发限流", retries="3",
+            retain_until="2026-10-15", visible=False,
+            events=[{"at": "2026-09-15T14:20:46", "action": "登记日志", "operator": "system"},
+                    {"at": "2026-09-16T09:30:00", "action": "归档记录",
+                     "operator": "archivist-01"},
+                    {"at": "2026-10-16T10:00:00", "action": "清理日志",
+                     "operator": "admin-01", "result": "仅隐藏，完整文件与摘要链保留"}],
+        ),
+    ]
+    # 完整文件先落好、校验和算对，最后才允许挂上「已归档」状态。
+    for row_id, built_at in ((3, "2026-08-21T09:00:00"), (4, "2026-09-16T09:30:00")):
+        row = next(item for item in rows if item["id"] == row_id)
+        archive = build_archive(row, built_at=built_at)
+        assert verify_archive(archive), "种子审计文件校验和必须自洽"
+        row["archive"] = archive
+    return rows
+
 SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     "endpoint": [{'id': 1,
   'status': '草稿',
@@ -544,42 +628,7 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
   '降级策略': '限流配置样例3',
   '优先级': '限流配置样例3',
   '生效时段': '2026-09-03'}],
-    "log": [{'id': 1,
-  'status': '草稿',
-  'pending': True,
-  'abnormal': False,
-  '记录编号': 'LOG-0001',
-  '关联端点': '采集日志样例1',
-  '请求时间': '2026-09-01',
-  '响应状态': '采集日志样例1',
-  '耗时毫秒': '采集日志样例1',
-  '返回行数': '采集日志样例1',
-  '错误信息': '采集日志样例1',
-  '重试次数': '采集日志样例1'},
- {'id': 2,
-  'status': '记录中',
-  'pending': True,
-  'abnormal': True,
-  '记录编号': 'LOG-0002',
-  '关联端点': '采集日志样例2',
-  '请求时间': '2026-09-02',
-  '响应状态': '采集日志样例2',
-  '耗时毫秒': '采集日志样例2',
-  '返回行数': '采集日志样例2',
-  '错误信息': '采集日志样例2',
-  '重试次数': '采集日志样例2'},
- {'id': 3,
-  'status': '已归档',
-  'pending': False,
-  'abnormal': False,
-  '记录编号': 'LOG-0003',
-  '关联端点': '采集日志样例3',
-  '请求时间': '2026-09-03',
-  '响应状态': '采集日志样例3',
-  '耗时毫秒': '采集日志样例3',
-  '返回行数': '采集日志样例3',
-  '错误信息': '采集日志样例3',
-  '重试次数': '采集日志样例3'}],
+    "log": _build_log_seed(),
     "delta": [{'id': 1,
   'status': '草稿',
   'pending': True,
